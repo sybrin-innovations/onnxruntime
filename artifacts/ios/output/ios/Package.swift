@@ -3,7 +3,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "onnxruntime-ios-custom-1.27.0",
+    name: "onnxruntime-ios-custom-1.27.0-custom.1",
     platforms: [
         .iOS(.v15)
     ],
