@@ -13,6 +13,9 @@
 #include "core/providers/webgpu/data_transfer.h"
 #include "core/providers/webgpu/vendor/intel/math/matmul.h"
 #include "core/providers/webgpu/webgpu_utils.h"
+#if !defined(__wasm__)
+#include "core/providers/webgpu/math/subgroup_matrix_matmul.h"
+#endif
 
 namespace onnxruntime {
 namespace webgpu {
@@ -120,6 +123,17 @@ Status MatMul::ComputeInternal(ComputeContext& context) const {
   }
   bool has_bias = context.InputCount() > 2;
 
+#if !defined(__wasm__)
+  // Try the subgroup-matrix implementation (with a vendor-specific tiling policy) first.
+  if (impl_) {
+    bool handled = false;
+    ORT_RETURN_IF_ERROR(impl_->Compute(context, handled));
+    if (handled) {
+      return Status::OK();
+    }
+  }
+#endif
+
   if (helper.N() < 8 && helper.K() < 8) {  // call MatMulNaiveProgram
 
     const uint32_t m = narrow<uint32_t>(helper.M());  // left matrix first dimension
@@ -174,6 +188,26 @@ Status MatMul::ComputeInternal(ComputeContext& context) const {
   return ComputeMatMul(&context, Activation(), inputs, output_tensor);
 }
 
+Status MatMul::PrePackInternal(ComputeContextBase& context,
+                               const Tensor& tensor,
+                               int input_idx,
+                               AllocatorPtr alloc,
+                               /*out*/ bool& is_packed) {
+  is_packed = false;
+#if !defined(__wasm__)
+  // Create the subgroup-matrix implementation once based on device capabilities.
+  if (!impl_) {
+    impl_ = CreateSubgroupMatrixMatMulImpl(*this, context);
+  }
+#else
+  ORT_UNUSED_PARAMETER(context);
+#endif
+  ORT_UNUSED_PARAMETER(tensor);
+  ORT_UNUSED_PARAMETER(input_idx);
+  ORT_UNUSED_PARAMETER(alloc);
+  return Status::OK();
+}
+
 Status ComputeMatMul(ComputeContext* context,
                      const Activation& activation, std::vector<const Tensor*>& inputs, Tensor* output_tensor, bool is_channels_last,
                      const TensorShape& input_a_reshape,
@@ -194,15 +228,15 @@ Status ComputeMatMul(ComputeContext* context,
   // When B is a matrix (batch is 1), we fold batchA into the M dimension for better
   // performance (e.g., [2,3,5] → [1,6,5]).
   if (batchA != 1 && batchB == 1) {
-    // dimensions of A: [1,`batchA`, M, K]
+    // dimensions of A: [`batchA` * M, K]
     int64_t batchAndM = a_shape.SizeToDimension(a_shape.NumDimensions() - 1);
-    TensorShapeVector dims_a = {1, batchAndM, helper.K()};
-    // dimensions of B: [1,K,N]
-    TensorShapeVector dims_b = {1, helper.K(), helper.N()};
+    TensorShapeVector dims_a = {batchAndM, helper.K()};
+    // dimensions of B: [K, N]
+    TensorShapeVector dims_b = {helper.K(), helper.N()};
 
     a_shape = TensorShape(dims_a);
     b_shape = TensorShape(dims_b);
-    output_shape = {1, batchAndM, helper.N()};
+    output_shape = {batchAndM, helper.N()};
   }
 
   // helpful dimension variables

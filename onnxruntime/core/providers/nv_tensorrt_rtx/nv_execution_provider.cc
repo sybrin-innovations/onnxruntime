@@ -11,6 +11,7 @@
 #include "core/session/onnxruntime_cxx_api.h"
 #include "core/common/common.h"
 #include "core/common/narrow.h"
+#include "core/common/path_utils.h"
 #include "core/common/safeint.h"
 #include "core/framework/ort_value.h"
 #include "nv_execution_provider.h"
@@ -1138,10 +1139,10 @@ NvExecutionProvider::NvExecutionProvider(const NvExecutionProviderInfo& info)
   if (dump_ep_context_model_) {
     // TODO(maximilianm) not sure if this is still needed
     engine_cache_enable_ = true;
-    if (IsAbsolutePath(cache_path_)) {
+    if (path_utils::IsAbsolutePath(cache_path_)) {
       LOGS_DEFAULT(ERROR) << "In the case of dumping context model and for security purpose, the trt_engine_cache_path should be set with a relative path, but it is an absolute path:  " << cache_path_;
     }
-    if (IsRelativePathToParentPath(cache_path_)) {
+    if (path_utils::IsRelativePathToParentPath(cache_path_)) {
       LOGS_DEFAULT(ERROR) << "In the case of dumping context model and for security purpose, The trt_engine_cache_path has '..', it's not allowed to point outside the directory.";
     }
 
@@ -1150,7 +1151,7 @@ NvExecutionProvider::NvExecutionProvider(const NvExecutionProviderInfo& info)
     engine_cache_relative_path_to_context_model_dir = cache_path_;
 
     // Make cache_path_ to be the relative path of ep_context_file_path_
-    cache_path_ = GetPathOrParentPathOfCtxModel(ep_context_file_path_).append(cache_path_).string();
+    cache_path_ = path_utils::GetDirOrParentPath(ep_context_file_path_).append(cache_path_).string();
   }
 
   if (engine_decryption_enable_) {
@@ -1292,7 +1293,8 @@ bool NvExecutionProvider::IsGraphCaptured(int graph_annotation_id) const {
   return false;
 }
 
-Status NvExecutionProvider::ReplayGraph(int graph_annotation_id) {
+Status NvExecutionProvider::ReplayGraph(int graph_annotation_id, bool /*sync*/) {
+  // The sync parameter is ignored: NV TRT RTX EP manages its own CUDA graph lifecycle and always replays synchronously.
   // This is hardcoded to always return OK because we are not allowing the ORT framework to have the CUDA graph control.
   (void)graph_annotation_id;
   return Status::OK();
@@ -2929,7 +2931,7 @@ Status NvExecutionProvider::CreateNodeComputeInfoFromGraph(const GraphViewer& gr
 
   // Generate file name for dumping ep context model
   if (dump_ep_context_model_ && ctx_model_path_.empty()) {
-    ctx_model_path_ = GetCtxModelPath(ep_context_file_path_, model_path_);
+    ctx_model_path_ = path_utils::GetPathWithStemSuffix(ep_context_file_path_, model_path_, "_ctx.onnx");
   }
   {
     auto lock = GetApiLock();
